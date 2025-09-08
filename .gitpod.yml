@@ -1,0 +1,84 @@
+image: python:3.11
+
+tasks:
+  - name: Setup Airflow + Postgres
+    init: |
+      export AIRFLOW_HOME=~/airflow
+      pip install -r requirements.txt
+      # Start Postgres in background
+      sudo apt-get update && sudo apt-get install -y postgresql postgresql-contrib
+      sudo service postgresql start
+      sudo -u postgres psql -c "CREATE USER airflow WITH PASSWORD 'airflow';"
+      sudo -u postgres createdb airflow_db -O airflow
+      airflow db init
+      airflow users create \
+        --username admin \
+        --firstname Gitpod \
+        --lastname User \
+        --role Admin \
+        --email admin@example.com \
+        --password admin
+    command: |
+      airflow webserver --port 8080
+
+ports:
+  - port: 8080
+    onOpen: open-preview
+
+📄 requirements.txt
+apache-airflow==2.10.2
+--constraint https://raw.githubusercontent.com/apache/airflow/constraints-2.10.2/constraints-3.11.txt
+apache-airflow-providers-postgres
+
+📂 dags/etl_dag.py
+from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.providers.postgres.operators.postgres import PostgresOperator
+from airflow.operators.python import PythonOperator
+import psycopg2
+
+default_args = {
+    'owner': 'gitpod',
+    'depends_on_past': False,
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+def fetch_data():
+    conn = psycopg2.connect(
+        host="localhost",
+        database="airflow_db",
+        user="airflow",
+        password="airflow"
+    )
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM sales;")
+    rows = cur.fetchall()
+    for row in rows:
+        print(row)
+    cur.close()
+    conn.close()
+
+with DAG(
+    'etl_sales_pipeline',
+    default_args=default_args,
+    description='ETL DAG with Postgres in Gitpod',
+    schedule_interval=timedelta(days=1),
+    start_date=datetime(2025, 1, 1),
+    catchup=False,
+) as dag:
+
+    create_and_insert = PostgresOperator(
+        task_id="init_sales_table",
+        postgres_conn_id="postgres_default",
+        sql="scripts/init_db.sql"
+    )
+
+    query_data = PythonOperator(
+        task_id="query_sales",
+        python_callable=fetch_data
+    )
+
+    create_and_insert >> query_data
